@@ -11,7 +11,6 @@
  * microcontroller manufactured by Nanjing Qinheng Microelectronics.
  *******************************************************************************/
 #include "debug.h"
-#include "usb_cdc_bridge.h"
 
 static uint16_t  p_us = 0;
 static uint16_t p_ms = 0;

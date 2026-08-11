@@ -1,7 +1,7 @@
 /********************************** (C) COPYRIGHT *******************************
  * File Name          : usb_msc.c
  * Description        : CherryUSB 复合设备（CDC ACM + MSC + HID），MSC 为 RAM 模拟盘
- *                      （20 扇区 × 512B，bss 静态数组，掉电丢失）。
+ *                      （16 扇区 × 512B，bss 静态数组，掉电丢失）。
  *                      CDC/HID 仅注册端点验证初始化，无实际业务。
  ********************************************************************************/
 #include "usbd_core.h"
@@ -138,7 +138,7 @@ static void usbd_event_handler(uint8_t busid, uint8_t event)
 /*   - 越界写返回 -1（WRITE FAULT），绝不静默丢弃                             */
 /* ------------------------------------------------------------------------- */
 #define BLOCK_SIZE  512
-#define BLOCK_COUNT 20 /* 10KB */
+#define BLOCK_COUNT 16 /* 8KB */
 
 __attribute__((aligned(4))) static uint8_t mass_block[BLOCK_COUNT][BLOCK_SIZE];
 

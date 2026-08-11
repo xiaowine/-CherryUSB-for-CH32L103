@@ -68,7 +68,6 @@ set(SRC_FILES
         "${CMAKE_CURRENT_SOURCE_DIR}/User/CherryUSB/port/ch32/ch32fs/usb_dc_usbfs.c"
         "${CMAKE_CURRENT_SOURCE_DIR}/User/USB/usb_msc.c"
         "${CMAKE_CURRENT_SOURCE_DIR}/User/USB/usb_dc_low_level_init.c"
-        "${CMAKE_CURRENT_SOURCE_DIR}/User/USB/uart1_bridge.c"
         "${CMAKE_CURRENT_SOURCE_DIR}/User/ch32l103_it.c"
         "${CMAKE_CURRENT_SOURCE_DIR}/User/main.c"
         "${CMAKE_CURRENT_SOURCE_DIR}/User/system_ch32l103.c"
@@ -114,7 +113,7 @@ set(CMAKE_ASM_FLAGS " -march=rv32imacxw -mabi=ilp32 -msmall-data-limit=8 -msave-
 
 add_executable("${TARGET_ARTIFACT}" ${SRC_FILES})
 
-set_target_properties("${TARGET_ARTIFACT}" PROPERTIES LINK_FLAGS " -march=rv32imacxw -mabi=ilp32 -msmall-data-limit=8 -msave-restore -fmax-errors=20 -Os -fmessage-length=0 -fsigned-char -ffunction-sections -fdata-sections -fno-common -Wunused -Wuninitialized -g -T \"${CMAKE_CURRENT_SOURCE_DIR}/Ld/Link.ld\"   -nostartfiles -Xlinker --gc-sections -Wl,-Map,\"SimulateCDC.map\" --specs=nano.specs --specs=nosys.specs -o \"SimulateCDC.elf\" ")
+set_target_properties("${TARGET_ARTIFACT}" PROPERTIES LINK_FLAGS " -march=rv32imacxw -mabi=ilp32 -msmall-data-limit=8 -msave-restore -fmax-errors=20 -Os -fmessage-length=0 -fsigned-char -ffunction-sections -fdata-sections -fno-common -Wunused -Wuninitialized -g -T \"${CMAKE_CURRENT_SOURCE_DIR}/Ld/Link.ld\"   -nostartfiles -Xlinker --gc-sections -Xlinker --print-memory-usage  -Wl,-Map,\"SimulateCDC.map\" --specs=nano.specs --specs=nosys.specs -o \"SimulateCDC.elf\" ")
 
 target_link_libraries("${TARGET_ARTIFACT}" )
 
