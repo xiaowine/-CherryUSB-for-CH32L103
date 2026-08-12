@@ -270,7 +270,7 @@ def main():
     cap_sec = parse_capacity(sys.argv[1])
     fmt = sys.argv[2].lower()
     assert fmt in ("mbr", "gpt"), "格式必须是 mbr 或 gpt"
-    spc_shift = {"128K": 8, "256K": 9, "512K": 10, "1M": 11, "4M": 13}.get(
+    spc_shift = {"128K": 8, "256K": 9, "512K": 10, "1M": 11, "2M": 12, "4M": 13}.get(
         sys.argv[3].upper() if len(sys.argv) > 3 else "512K", 10)
 
     L = layout(cap_sec, fmt, spc_shift)
