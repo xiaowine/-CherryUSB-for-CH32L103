@@ -172,7 +172,7 @@ static bool usbd_reset_endpoint(uint8_t busid, const struct usb_endpoint_descrip
  *
  * @return true if the descriptor was found, false otherwise
  */
-static bool usbd_get_descriptor(uint8_t busid, uint16_t type_index, uint8_t **data, uint32_t *len)
+static bool usbd_get_descriptor(uint8_t busid, uint16_t type_index, uint8_t intf_num, uint8_t **data, uint32_t *len)
 {
     uint8_t type = 0U;
     uint8_t index = 0U;
@@ -300,6 +300,19 @@ static bool usbd_get_descriptor(uint8_t busid, uint16_t type_index, uint8_t **da
 
             desc = (uint8_t *)g_usbd_core[busid].descriptors->bos_descriptor->string;
             desc_len = g_usbd_core[busid].descriptors->bos_descriptor->string_len;
+            break;
+
+        case 0x22: /* HID_DESCRIPTOR_TYPE_HID_REPORT */
+            for (uint8_t i = 0; i < g_usbd_core[busid].intf_offset; i++) {
+                struct usbd_interface *intf = g_usbd_core[busid].intf[i];
+
+                if (intf && (intf->intf_num == intf_num)) {
+                    desc = intf->hid_report_descriptor;
+                    desc_len = intf->hid_report_descriptor_len;
+                    found = true;
+                    break;
+                }
+            }
             break;
 
         default:
@@ -520,7 +533,7 @@ static bool usbd_std_device_req_handler(uint8_t busid, struct usb_setup_packet *
             break;
 
         case USB_REQUEST_GET_DESCRIPTOR:
-            ret = usbd_get_descriptor(busid, value, data, len);
+            ret = usbd_get_descriptor(busid, value, LO_BYTE(setup->wIndex), data, len);
             break;
 
         case USB_REQUEST_SET_DESCRIPTOR:

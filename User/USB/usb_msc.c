@@ -1,7 +1,7 @@
 /********************************** (C) COPYRIGHT *******************************
  * File Name          : usb_msc.c
- * Description        : CherryUSB 复合设备（CDC ACM + MSC + HID），MSC 为 RAM 模拟盘
- *                      （16 扇区 × 512B，bss 静态数组，掉电丢失）。
+ * Description        : CherryUSB 复合设备（CDC ACM + MSC + HID），MSC 为 2TB 假 U 盘
+ *                      （预制 MBR+FAT32，读返回预制结构/0，写全部丢弃）。
  *                      CDC/HID 仅注册端点验证初始化，无实际业务。
  ********************************************************************************/
 #include "usbd_core.h"
@@ -22,7 +22,7 @@
 
 /* 沿用原工程 VID/PID (WCH 0x1A86 / 0xFE0C) */
 #define USBD_VID       0x1A86
-#define USBD_PID       0xFE0C
+#define USBD_PID       0xFE0D /* 换 PID 触发 Windows 全新 usbstor 加载 */
 #define USBD_MAX_POWER 100
 
 #define USB_CONFIG_SIZE (9 + CDC_ACM_DESCRIPTOR_LEN + MSC_DESCRIPTOR_LEN + 25)
@@ -64,7 +64,7 @@ static const char *string_descriptors[] = {
     (const char[]){ 0x09, 0x04 }, /* Langid */
     "WCH",                        /* Manufacturer */
     "CH32L103 Composite",         /* Product */
-    "L103-MSC-20260811",          /* Serial Number（唯一，避免与旧设备实例冲突） */
+    "L103-MSC-EXFAT-01",          /* Serial Number（换新触发 Windows 全新枚举） */
 };
 
 /* 最小 BOS 描述符：避免 Windows 周期性请求 0x0F 时报错（同 CDC 版） */
@@ -133,88 +133,83 @@ static void usbd_event_handler(uint8_t busid, uint8_t event)
 }
 
 /* ------------------------------------------------------------------------- */
-/* RAM 介质：10KB（20 扇区 × 512B），bss 静态数组                             */
-/*   - 掉电丢失，符合 RAM 模拟盘语义；bss 由启动代码清零                       */
-/*   - 越界写返回 -1（WRITE FAULT），绝不静默丢弃                             */
+/* 预制 MBR + FAT32 引导（1TB 假盘：读返回预制结构/0，写全部丢弃）            */
+/*   分区：LBA 2048 起，类型 0x0C，大小 0x7FFFF800 扇区（1TB）               */
+/*   FAT32：簇 128 扇区(64KB)，FAT 表 131056 扇区(67MB) ×2，根目录簇 2                         */
+/*   FAT 头(FAT[0..2])虚拟返回；FAT/目录/数据读全 0 = 空盘                    */
 /* ------------------------------------------------------------------------- */
-#define BLOCK_SIZE  512
-#define BLOCK_COUNT 16 /* 8KB */
+#define FAKE_PART_LBA 2048
+#define FAKE_RSVD      32
+#define FAKE_FAT_LBA   (FAKE_PART_LBA + FAKE_RSVD)
 
-__attribute__((aligned(4))) static uint8_t mass_block[BLOCK_COUNT][BLOCK_SIZE];
+static const uint8_t fake_mbr[512] = {
+    [0x1B8] = 0x78, [0x1B9] = 0x56, [0x1BA] = 0x34, [0x1BB] = 0x12,
+    [0x1BE] = 0x00,
+    [0x1BF] = 0x00, [0x1C0] = 0x02, [0x1C1] = 0x00,
+    [0x1C2] = 0x0C,
+    [0x1C3] = 0xFF, [0x1C4] = 0xFF, [0x1C5] = 0xFF,
+    [0x1C6] = 0x00, [0x1C7] = 0x08, [0x1C8] = 0x00, [0x1C9] = 0x00,
+    [0x1CA] = 0x00, [0x1CB] = 0xF8, [0x1CC] = 0xFF, [0x1CD] = 0x7F,
+    [510] = 0x55, [511] = 0xAA,
+};
+
+static const uint8_t fake_bpb[512] = {
+    [0x000] = 0xEB, [0x001] = 0x58, [0x002] = 0x90, [0x003] = 0x4D, [0x004] = 0x53, [0x005] = 0x44,
+    [0x006] = 0x4F, [0x007] = 0x53, [0x008] = 0x35, [0x009] = 0x2E, [0x00A] = 0x30, [0x00C] = 0x02,
+    [0x00D] = 0x80, [0x00E] = 0x20, [0x010] = 0x02, [0x015] = 0xF8, [0x018] = 0x3F, [0x01A] = 0xFF,
+    [0x01D] = 0x08, [0x020] = 0x00, [0x021] = 0xF8, [0x022] = 0xFF, [0x023] = 0x7F, [0x024] = 0xF0,
+    [0x025] = 0xFF, [0x026] = 0x01, [0x02C] = 0x02, [0x030] = 0x01, [0x032] = 0x06, [0x040] = 0x80, [0x042] = 0x29,
+    [0x043] = 0x78, [0x044] = 0x56, [0x045] = 0x34, [0x046] = 0x12, [0x047] = 0x46, [0x048] = 0x41,
+    [0x049] = 0x4B, [0x04A] = 0x45, [0x04B] = 0x32, [0x04C] = 0x35, [0x04D] = 0x36, [0x04E] = 0x47,
+    [0x04F] = 0x42, [0x050] = 0x20, [0x051] = 0x20, [0x052] = 0x46, [0x053] = 0x41, [0x054] = 0x54,
+    [0x055] = 0x33, [0x056] = 0x32, [0x057] = 0x20, [0x058] = 0x20, [0x059] = 0x20, [0x1FE] = 0x55,
+    [0x1FF] = 0xAA,
+};
+
+static const uint8_t fake_fsinfo[512] = {
+    [0x000] = 0x52, [0x001] = 0x52, [0x002] = 0x61, [0x003] = 0x41,
+    [0x1E4] = 0x72, [0x1E5] = 0x72, [0x1E6] = 0x41, [0x1E7] = 0x61,
+    [0x1E8] = 0xFF, [0x1E9] = 0xFF, [0x1EA] = 0xFF, [0x1EB] = 0xFF,
+    [0x1EC] = 0x03, [0x1FE] = 0x55, [0x1FF] = 0xAA,
+};
+
+static const uint8_t fake_fat_head[12] = {
+    0xF8, 0xFF, 0xFF, 0x0F, 0xFF, 0xFF, 0xFF, 0x0F, 0xFF, 0xFF, 0xFF, 0x0F
+};
 
 void usbd_msc_get_cap(uint8_t busid, uint8_t lun, uint32_t *block_num, uint32_t *block_size)
 {
-    *block_num = BLOCK_COUNT; /* 真实容量：20 块 × 512B = 10KB */
-    *block_size = BLOCK_SIZE;
+    *block_num = 0x80000000; /* 假容量 1TB */
+    *block_size = 512;
 }
 
 int usbd_msc_sector_read(uint8_t busid, uint8_t lun, uint32_t sector, uint8_t *buffer, uint32_t length)
 {
-    if ((sector + (length / BLOCK_SIZE)) > BLOCK_COUNT) {
-        return -1;
+    uint32_t i;
+
+    if (sector == 0) {
+        memcpy(buffer, fake_mbr, length);
+    } else if (sector == FAKE_PART_LBA) {
+        memcpy(buffer, fake_bpb, length);
+    } else if (sector == FAKE_PART_LBA + 1) {
+        memcpy(buffer, fake_fsinfo, length);
+    } else if (sector == FAKE_FAT_LBA) {
+        memcpy(buffer, fake_fat_head, 12);
+        for (i = 12; i < length; i++) {
+            buffer[i] = 0x00;
+        }
+    } else {
+        for (i = 0; i < length; i++) {
+            buffer[i] = 0x00;
+        }
     }
-    memcpy(buffer, &mass_block[sector][0], length);
     return 0;
 }
 
 int usbd_msc_sector_write(uint8_t busid, uint8_t lun, uint32_t sector, uint8_t *buffer, uint32_t length)
 {
-    if ((sector + (length / BLOCK_SIZE)) > BLOCK_COUNT) {
-        return -1;
-    }
-    memcpy(&mass_block[sector][0], buffer, length);
+    /* 整蛊核心：所有写入直接丢弃，永远假装成功 */
     return 0;
-}
-
-/* ------------------------------------------------------------------------- */
-/* 启动预格式化 FAT12：Windows 对超小卷拒绝 format，但可挂载已有 FAT12 卷     */
-/*   - 布局（20 扇区）：引导 1 + FAT 2 + 根目录 2 + 数据 15（簇=1 扇区）      */
-/*   - 只写扇区 0(引导 BPB) 与 1-2(FAT×2)，根目录/数据区保持 bss 清零态       */
-/*     （根目录 0x00 = 空目录结束符，数据区全 0 = 未分配，均为合法态）         */
-/*   - 触发条件：扇区 0 无 0x55AA 签名；bss 清零后必然触发（每次上电重建，    */
-/*     符合 RAM 盘掉电丢失语义）                                              */
-/* ------------------------------------------------------------------------- */
-#define FAT12_ROOT_ENTRIES 32
-#define FAT12_RESERVED     1
-#define FAT12_NUM_FATS     2
-#define FAT12_FAT_SECTORS  1
-
-static const uint8_t fat12_boot_sector[BLOCK_SIZE] = {
-    0xEB, 0x3C, 0x90,                       /* BS_jmpBoot */
-    'M', 'S', 'D', 'O', 'S', '5', '.', '0', /* BS_OEMName */
-    0x00, 0x02,                             /* BPB_BytsPerSec = 512 */
-    0x01,                                   /* BPB_SecPerClus = 1 */
-    FAT12_RESERVED, 0x00,                   /* BPB_RsvdSecCnt = 1 */
-    FAT12_NUM_FATS,                         /* BPB_NumFATs = 2 */
-    FAT12_ROOT_ENTRIES, 0x00,               /* BPB_RootEntCnt = 32 */
-    BLOCK_COUNT, 0x00,                      /* BPB_TotSec16 = 20 */
-    0xF8,                                   /* BPB_Media = fixed disk */
-    FAT12_FAT_SECTORS, 0x00,                /* BPB_FATSz16 = 1 */
-    0x3F, 0x00,                             /* BPB_SecPerTrk = 63 */
-    0xFF, 0x00,                             /* BPB_NumHeads = 255 */
-    0x00, 0x00, 0x00, 0x00,                 /* BPB_HiddSec = 0 */
-    0x00, 0x00, 0x00, 0x00,                 /* BPB_TotSec32 = 0 */
-    0x80,                                   /* BS_DrvNum */
-    0x00,                                   /* BS_Reserved1 */
-    0x29,                                   /* BS_BootSig */
-    0x12, 0x34, 0x56, 0x78,                 /* BS_VolID */
-    'C', 'H', '3', '2', 'L', '1', '0', '3', ' ', ' ', ' ', /* BS_VolLab (11B) */
-    'F', 'A', 'T', '1', '2', ' ', ' ', ' ', /* BS_FilSysType (8B) */
-    /* 引导代码区（0x3E 起）全 0：USB 盘不引导，Windows 挂载不执行 */
-    [510] = 0x55, [511] = 0xAA,             /* 签名 */
-};
-
-static void msc_preattach_format(void)
-{
-    uint8_t fat_table[BLOCK_SIZE] = { 0xF8, 0xFF, 0xFF }; /* FAT[0]=0xFF8, FAT[1]=0xFFF，其余 0=空闲 */
-
-    if (*(volatile uint16_t *)&mass_block[0][510] == 0xAA55) {
-        return; /* 已是合法 FAT12 卷 */
-    }
-    /* bss 已清零，直接写 BPB + FAT×2 到扇区 0-2；根目录/数据区保持 0 即可 */
-    memcpy(&mass_block[0][0], fat12_boot_sector, BLOCK_SIZE);
-    memcpy(&mass_block[1][0], fat_table, BLOCK_SIZE);
-    memcpy(&mass_block[2][0], fat_table, BLOCK_SIZE);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -271,7 +266,6 @@ static struct usbd_interface intf3;
 
 void msc_ram_init(uint8_t busid)
 {
-    msc_preattach_format(); /* bss 清零后自动重建 FAT12 卷（纯内存，微秒级） */
     usbd_desc_register(busid, &msc_descriptor);
 
     /* CDC ACM：接口 0/1（控制/数据），端点 IN 0x81 / OUT 0x02 / INT 0x83 */
