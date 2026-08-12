@@ -164,6 +164,10 @@
 #define GET_BE32(field) \
     (((uint32_t)(field)[0] << 24) | ((uint32_t)(field)[1] << 16) | ((uint32_t)(field)[2] << 8) | ((uint32_t)(field)[3] << 0))
 
+#define GET_BE64(field) \
+    (((uint64_t)(field)[0] << 56) | ((uint64_t)(field)[1] << 48) | ((uint64_t)(field)[2] << 40) | ((uint64_t)(field)[3] << 32) | \
+     ((uint64_t)(field)[4] << 24) | ((uint64_t)(field)[5] << 16) | ((uint64_t)(field)[6] << 8) | ((uint64_t)(field)[7] << 0))
+
 #define SET_BE16(field, value)                \
     do {                                      \
         (field)[0] = (uint8_t)((value) >> 8); \

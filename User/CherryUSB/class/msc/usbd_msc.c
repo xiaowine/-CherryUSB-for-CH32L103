@@ -28,6 +28,8 @@ enum Stage {
 };
 
 /* Device data structure */
+extern uint64_t g_msc_capacity;
+
 USB_NOCACHE_RAM_SECTION struct usbd_msc_priv {
     /* state of the bulk-only state machine */
     enum Stage stage;
@@ -40,7 +42,7 @@ USB_NOCACHE_RAM_SECTION struct usbd_msc_priv {
     uint8_t ASC;  /* Additional Sense Code */
     uint8_t ASQ;  /* Additional Sense Qualifier */
     uint8_t max_lun;
-    uint32_t start_sector;
+    uint64_t start_sector;
     uint32_t nsectors;
     uint32_t scsi_blk_size[CONFIG_USBDEV_MSC_MAX_LUN];
     uint32_t scsi_blk_nbr[CONFIG_USBDEV_MSC_MAX_LUN];
@@ -489,10 +491,7 @@ static bool SCSI_readCapacity10(uint8_t busid, uint8_t **data, uint32_t *len)
     }
 
     uint8_t capacity10[SCSIRESP_READCAPACITY10_SIZEOF] = {
-        (uint8_t)(((g_usbd_msc[busid].scsi_blk_nbr[g_usbd_msc[busid].cbw.bLUN] - 1) >> 24) & 0xff),
-        (uint8_t)(((g_usbd_msc[busid].scsi_blk_nbr[g_usbd_msc[busid].cbw.bLUN] - 1) >> 16) & 0xff),
-        (uint8_t)(((g_usbd_msc[busid].scsi_blk_nbr[g_usbd_msc[busid].cbw.bLUN] - 1) >> 8) & 0xff),
-        (uint8_t)(((g_usbd_msc[busid].scsi_blk_nbr[g_usbd_msc[busid].cbw.bLUN] - 1) >> 0) & 0xff),
+        0xFF, 0xFF, 0xFF, 0xFF, /* 最后 LBA = 0xFFFFFFFF:容量>2TB,触发 READ CAPACITY(16) */
 
         (uint8_t)((g_usbd_msc[busid].scsi_blk_size[g_usbd_msc[busid].cbw.bLUN] >> 24) & 0xff),
         (uint8_t)((g_usbd_msc[busid].scsi_blk_size[g_usbd_msc[busid].cbw.bLUN] >> 16) & 0xff),
@@ -629,6 +628,85 @@ static bool SCSI_write12(uint8_t busid, uint8_t **data, uint32_t *len)
     return true;
 }
 
+static bool SCSI_readCapacity16(uint8_t busid, uint8_t **data, uint32_t *len)
+{
+    if (g_usbd_msc[busid].cbw.dDataLength == 0U) {
+        SCSI_SetSenseData(busid, SCSI_KCQIR_INVALIDCOMMAND);
+        return false;
+    }
+    uint8_t capacity16[12] = {
+        (uint8_t)(((g_msc_capacity - 1) >> 56) & 0xff),
+        (uint8_t)(((g_msc_capacity - 1) >> 48) & 0xff),
+        (uint8_t)(((g_msc_capacity - 1) >> 40) & 0xff),
+        (uint8_t)(((g_msc_capacity - 1) >> 32) & 0xff),
+        (uint8_t)(((g_msc_capacity - 1) >> 24) & 0xff),
+        (uint8_t)(((g_msc_capacity - 1) >> 16) & 0xff),
+        (uint8_t)(((g_msc_capacity - 1) >> 8) & 0xff),
+        (uint8_t)(((g_msc_capacity - 1) >> 0) & 0xff),
+        (uint8_t)((g_usbd_msc[busid].scsi_blk_size[g_usbd_msc[busid].cbw.bLUN] >> 24) & 0xff),
+        (uint8_t)((g_usbd_msc[busid].scsi_blk_size[g_usbd_msc[busid].cbw.bLUN] >> 16) & 0xff),
+        (uint8_t)((g_usbd_msc[busid].scsi_blk_size[g_usbd_msc[busid].cbw.bLUN] >> 8) & 0xff),
+        (uint8_t)((g_usbd_msc[busid].scsi_blk_size[g_usbd_msc[busid].cbw.bLUN] >> 0) & 0xff),
+    };
+    memcpy(*data, (uint8_t *)capacity16, 12);
+    *len = 12;
+    return true;
+}
+
+static bool SCSI_read16(uint8_t busid, uint8_t **data, uint32_t *len)
+{
+    (void)data;
+    (void)len;
+
+    if (((g_usbd_msc[busid].cbw.bmFlags & 0x80U) != 0x80U) || (g_usbd_msc[busid].cbw.dDataLength == 0U)) {
+        SCSI_SetSenseData(busid, SCSI_KCQIR_INVALIDCOMMAND);
+        return false;
+    }
+
+    g_usbd_msc[busid].start_sector = GET_BE64(&g_usbd_msc[busid].cbw.CB[2]);
+    g_usbd_msc[busid].nsectors = GET_BE32(&g_usbd_msc[busid].cbw.CB[10]);
+
+    if ((g_usbd_msc[busid].start_sector + g_usbd_msc[busid].nsectors) > g_msc_capacity) {
+        SCSI_SetSenseData(busid, SCSI_KCQIR_LBAOUTOFRANGE);
+        return false;
+    }
+
+    if (g_usbd_msc[busid].cbw.dDataLength != (g_usbd_msc[busid].nsectors * g_usbd_msc[busid].scsi_blk_size[g_usbd_msc[busid].cbw.bLUN])) {
+        return false;
+    }
+    g_usbd_msc[busid].stage = MSC_DATA_IN;
+    return SCSI_processRead(busid);
+}
+
+static bool SCSI_write16(uint8_t busid, uint8_t **data, uint32_t *len)
+{
+    uint32_t data_len = 0;
+
+    (void)data;
+    (void)len;
+
+    if (((g_usbd_msc[busid].cbw.bmFlags & 0x80U) != 0x00U) || (g_usbd_msc[busid].cbw.dDataLength == 0U)) {
+        SCSI_SetSenseData(busid, SCSI_KCQIR_INVALIDCOMMAND);
+        return false;
+    }
+
+    g_usbd_msc[busid].start_sector = GET_BE64(&g_usbd_msc[busid].cbw.CB[2]);
+    g_usbd_msc[busid].nsectors = GET_BE32(&g_usbd_msc[busid].cbw.CB[10]);
+
+    data_len = g_usbd_msc[busid].nsectors * g_usbd_msc[busid].scsi_blk_size[g_usbd_msc[busid].cbw.bLUN];
+    if ((g_usbd_msc[busid].start_sector + g_usbd_msc[busid].nsectors) > g_msc_capacity) {
+        return false;
+    }
+
+    if (g_usbd_msc[busid].cbw.dDataLength != data_len) {
+        return false;
+    }
+    g_usbd_msc[busid].stage = MSC_DATA_OUT;
+    data_len = MIN(data_len, CONFIG_USBDEV_MSC_MAX_BUFSIZE);
+    usbd_ep_start_read(busid, mass_ep_data[busid][MSD_OUT_EP_IDX].ep_addr, g_usbd_msc[busid].block_buffer, data_len);
+    return true;
+}
+
 static bool SCSI_processRead(uint8_t busid)
 {
     uint32_t transfer_len;
@@ -728,6 +806,15 @@ static bool SCSI_CBWDecode(uint8_t busid, uint32_t nbytes)
             case SCSI_CMD_READCAPACITY10:
                 ret = SCSI_readCapacity10(busid, &buf2send, &len2send);
                 break;
+            case 0x9E: /* READ CAPACITY(16) */
+                ret = SCSI_readCapacity16(busid, &buf2send, &len2send);
+                break;
+            case 0x88: /* READ(16) */
+                ret = SCSI_read16(busid, &buf2send, &len2send);
+                break;
+            case 0x8A: /* WRITE(16) */
+                ret = SCSI_write16(busid, &buf2send, &len2send);
+                break;
             case SCSI_CMD_READ10:
                 ret = SCSI_read10(busid, NULL, 0);
                 break;
@@ -780,6 +867,7 @@ void mass_storage_bulk_out(uint8_t busid, uint8_t ep, uint32_t nbytes)
         case MSC_DATA_OUT:
             switch (g_usbd_msc[busid].cbw.CB[0]) {
                 case SCSI_CMD_WRITE10:
+                case 0x8A: /* WRITE(16) */
                 case SCSI_CMD_WRITE12:
 #if defined(CONFIG_USBDEV_MSC_THREAD)
                     g_usbd_msc[busid].nbytes = nbytes;
@@ -812,6 +900,7 @@ void mass_storage_bulk_in(uint8_t busid, uint8_t ep, uint32_t nbytes)
             switch (g_usbd_msc[busid].cbw.CB[0]) {
                 case SCSI_CMD_READ10:
                 case SCSI_CMD_READ12:
+                case 0x88: /* READ(16) */
 #if defined(CONFIG_USBDEV_MSC_THREAD)
                     usb_osal_mq_send(g_usbd_msc[busid].usbd_msc_mq, MSC_DATA_IN);
 #elif defined(CONFIG_USBDEV_MSC_POLLING)
@@ -941,7 +1030,7 @@ __WEAK void usbd_msc_get_cap(uint8_t busid, uint8_t lun, uint32_t *block_num, ui
     *block_size = 0;
 }
 
-__WEAK int usbd_msc_sector_read(uint8_t busid, uint8_t lun, uint32_t sector, uint8_t *buffer, uint32_t length)
+__WEAK int usbd_msc_sector_read(uint8_t busid, uint8_t lun, uint64_t sector, uint8_t *buffer, uint32_t length)
 {
     (void)busid;
     (void)lun;
@@ -952,7 +1041,7 @@ __WEAK int usbd_msc_sector_read(uint8_t busid, uint8_t lun, uint32_t sector, uin
     return 0;
 }
 
-__WEAK int usbd_msc_sector_write(uint8_t busid, uint8_t lun, uint32_t sector, uint8_t *buffer, uint32_t length)
+__WEAK int usbd_msc_sector_write(uint8_t busid, uint8_t lun, uint64_t sector, uint8_t *buffer, uint32_t length)
 {
     (void)busid;
     (void)lun;
